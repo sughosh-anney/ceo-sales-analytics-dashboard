@@ -32,9 +32,17 @@ rights, works identically on any machine with Python.
   `serve_ceo_dashboard.py`, `refresh_ceo_dashboard.py`,
   `build_ceo_dashboard_conso.py`, and the current source workbooks (needed for
   refreshing data, not for serving).
-- Set the source-workbook environment variables the refresh scripts read
-  (`CONSO_MIS_WORKBOOK`, `CONSO_MIS_WORKBOOK_AUG`, `CONSO_MIS_WORKBOOK_JUL`, and
-  any others named in the script headers). No source path is hard-coded.
+- Set the source-workbook and sheet-name environment variables the refresh
+  scripts read. Workbook locations: `CONSO_SALES_WORKBOOK`,
+  `CONSO_MIS_WORKBOOK`, `CONSO_MIS_WORKBOOK_AUG`, `CONSO_MIS_WORKBOOK_JUL`,
+  `CONSO_DYNAMIC_WORKBOOK`, `STANDALONE_SALES_WORKBOOK`,
+  `STANDALONE_DYNAMIC_WORKBOOK`, `ANNUAL_SALES_WORKBOOK`,
+  `FINANCIAL_STATEMENT_WORKBOOK`, `FS_FINANCIALS_JSON`. Sheet names:
+  `CONSO_TX_SHEET`, `CONSO_ENTITY_PL_SHEET`, `CONSO_GROUP_PL_SHEET`,
+  `ANNUAL_SALES_SHEET`, `SEGMENT_DISCLOSURE_SHEET`, `EXPORT_VALUE_SHEET`,
+  `MIS_REFERENCE_SHEET` (this last one names the reference tab the scripts
+  create in their own output workbook and has a generic default). No source
+  path or internal sheet name is hard-coded anywhere in the repository.
 
 ## 1. Serve the dashboard via Waitress
 
@@ -90,7 +98,7 @@ The dashboard carries confidential financial data, so access control matters:
   sit on a segment reachable only from the corporate network or over VPN — not
   exposed to the public internet. Confirm this with whoever manages the
   VPN/firewall.
-- **Defense in depth (host firewall):** rather than allowing the port from any
+- **Defence in depth (host firewall):** rather than allowing the port from any
   source, scope the rule to the internal client range:
   ```powershell
   New-NetFirewallRule -DisplayName "Sales Dashboard" -Direction Inbound `
@@ -129,7 +137,8 @@ cuts in place, point the environment variables at them, run
 - [ ] Python + `waitress` + `openpyxl` installed on the host
 - [ ] Folder copied to `<APP_ROOT>`, `serve_ceo_dashboard.py` running
       (interactively or as a Scheduled Task with an "At startup" trigger)
-- [ ] Source-workbook environment variables set; scripts run without a path error
+- [ ] Source-workbook and sheet-name environment variables set; scripts run
+      without a path or sheet-name error
 - [ ] `http://<APP_HOST>:<PORT>/` loads `CEO_Dashboard.html` and both
       Standalone/Consolidated views work inside it
 - [ ] Dashboard loads correctly from an internal/VPN-connected client

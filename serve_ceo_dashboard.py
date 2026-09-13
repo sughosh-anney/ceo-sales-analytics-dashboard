@@ -22,7 +22,6 @@ Then browse to:
 
 import argparse
 import mimetypes
-import os
 from pathlib import Path
 
 from waitress import serve

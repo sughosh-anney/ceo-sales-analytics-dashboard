@@ -300,7 +300,8 @@ def merge_salesmen(rows):
 
 
 def signal_from_growth(gr_pct):
-    """Signal Indicator Legend, exactly as published on the live site:
+    """Signal Indicator Legend, exactly as published in the reference
+    dashboard's own legend panel:
     Strong Growing >=15%, Growing 5-15%, Slow Growing 0-5%, Degrowing <0%,
     NA ==0%."""
     gr = gr_pct or 0
@@ -316,16 +317,17 @@ def signal_from_growth(gr_pct):
 
 
 def trend_from_growth(q1_gr, gr2m, gr3m, gr4m):
-    """Trend Indicator Legend, exactly as published on the live site's Growth
+    """Trend Indicator Legend, exactly as published in the reference
+    dashboard's Growth
     & Degrowth Analysis tab. Trajectory shape (Accelerating/Decelerating) is
     checked before the aggregate Q1-vs-terminal-month rules, but ONLY
     qualifies if the terminal month's own sign agrees with the trajectory's
     direction -- a strictly-falling trajectory that is STILL POSITIVE by the
     terminal month (a brand whose growth fell month on month but stayed
     positive throughout) is NOT
-    "Decelerating" on live, it falls through to "Steady Growth" (Q1 Gr% >= 5%
-    AND terminal Gr% >= 0%) instead -- confirmed by finding a live row with
-    this exact shape and comparing its label against another row with an
+    "Decelerating" there, it falls through to "Steady Growth" (Q1 Gr% >= 5%
+    AND terminal Gr% >= 0%) instead -- confirmed by finding a row with this
+    exact shape and comparing its label against another row with an
     outwardly-identical falling trajectory that DOES end negative (labelled
     "Decelerating" there) -- 2026-07-31. The original unconditional
     version of this function got this backwards for any monotonic trajectory
@@ -352,8 +354,8 @@ def trend_from_growth(q1_gr, gr2m, gr3m, gr4m):
 
 
 def growth_driver(val_from_vol, val_from_price, net_val_delta=None):
-    """Growth Driver Legend, exactly as published on the live site's Vol vs
-    Value tabs -- sign-based on Volume effect (V), Price effect (P), and Net
+    """Growth Driver Legend, exactly as published in the reference
+    dashboard's Vol vs Value tabs -- sign-based on Volume effect (V), Price effect (P), and Net
     value change, not a volume-share heuristic."""
     v = val_from_vol or 0
     p = val_from_price or 0
@@ -383,8 +385,8 @@ def growth_driver(val_from_vol, val_from_price, net_val_delta=None):
 # 1. CEO Executive Summary
 # ==============================================================================
 
-# Live's exact KPI-tile icon per position (its own lucide-icon set, verified
-# 2026-07-31 by reading each tile's icon class directly off the live DOM: ₹ =
+# The reference view's exact KPI-tile icon per position (its own lucide-icon
+# set, verified 2026-07-31 by reading each tile's icon class off its own DOM: ₹ =
 # lucide-indian-rupee, the growth tiles = lucide-trending-up, No-of-FCL AND
 # Gross-Margin both = lucide-layers (rendered here as the same 📦 stand-in for
 # consistency), and the 3 bottom-row reference tiles all = lucide-chart-column).
@@ -656,7 +658,7 @@ def build_growth(ws):
 
 
 # ==============================================================================
-# Splice into HTML (same pattern as Dashboard/refresh_dashboard.py)
+# Splice the built data into the dashboard HTML in place
 # ==============================================================================
 def splice_const(html_content, const_name, value_obj):
     payload = json.dumps(value_obj, ensure_ascii=False, separators=(",", ":"))

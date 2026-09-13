@@ -4,30 +4,44 @@ build_ceo_dashboard_conso.py
 Regenerates the Consolidated view of the CEO dashboard -- the all-entity
 mirror of the Standalone view -- from read-only source workbooks.
 
-Two classes of source are used, for two different purposes:
+Five read-only sources are used, each located by an environment variable:
 
-  * A transaction-level extract, covering every group entity. Used for the
-    Category, Brand and Zone breakdowns, which need row-level detail.
+  * The group sales-data workbook -- a transaction-level extract covering
+    every group entity. Used for the Category, Brand and Zone breakdowns,
+    which need row-level detail.
 
-  * The management reporting pack. Used for the headline KPI tiles and the
-    entity profit-and-loss table, because it is the reconciled figure.
+  * The consolidated MIS workbook -- the management reporting pack. Used for
+    the headline KPI tiles and the entity profit-and-loss table, because it
+    carries the reconciled figure.
 
-Why both: the transaction extract sums entities before intercompany
-elimination, so its grand total is a pre-elimination number. The management
-pack carries the eliminated, reconciled total. The dashboard shows the
-reconciled total in its headline tiles and uses the transaction extract only
-where a dimensional breakdown is required.
+  * The standalone sales analytics workbook -- the parent entity's own
+    monthly zone-wise sales split, merged in so the group zone view also
+    covers the export markets no subsidiary is based in.
+
+  * The annual category/entity sales workbook -- transaction-level rows for
+    the current and prior financial year, behind the whole 12M view.
+
+  * The board financial-statement workbook -- the audited segment disclosure
+    and each entity's own statutory profit-and-loss, behind the 12M group
+    KPIs and the 12M entity table.
+
+Why both a transaction extract and a management pack: the transaction sheet
+sums entities before intercompany elimination, so its grand total is a
+pre-elimination number, while the management pack carries the eliminated,
+reconciled total. The dashboard shows the reconciled total in its headline
+tiles and uses the transaction sheet only where a dimensional breakdown is
+required.
 
 Design notes:
 
-  * Consolidated figures are derived from transaction rows and reconciled to
-    the management report, rather than read from a pre-built pivot in the
-    source. Pre-built aggregates in spreadsheets can carry a stale filter;
-    deriving from rows and reconciling makes any divergence visible.
+  * Consolidated figures are derived from the transaction rows and
+    reconciled to the management report rather than read from a pre-built
+    summary pivot, so every entity-month is proved against the P&L before
+    anything downstream is built.
 
-  * Aggregation uses the workbook's canonical grouping columns rather than
-    its raw labels, because the raw label columns contain near-duplicate
-    spellings that would split a single group across several rows.
+  * Aggregation uses the workbook's own canonical management-reporting
+    columns rather than its raw transactional labels, so this view and the
+    Standalone view aggregate at the same level of taxonomy.
 
   * Growth signal, growth driver and trend classifications are computed here
     rather than read from the source, so that one definition applies across
@@ -53,15 +67,26 @@ from collections import defaultdict
 import openpyxl
 
 BASE = Path(__file__).resolve().parent
-XLSM_PATH = BASE / "CEO Standalone and Conso Dashboard Data_V3.xlsm"
-# Board MIS workbook -- absolute location supplied by the environment, never
-# hard-coded (CONSO_MIS_WORKBOOK).
-MIS_PATH = Path(os.environ.get("CONSO_MIS_WORKBOOK", ""))
+
+# Source workbook locations and sheet names are supplied by the environment, so no internal file or sheet naming is carried in this repository.
+XLSM_PATH            = Path(os.environ.get("CONSO_SALES_WORKBOOK", ""))
+MIS_PATH             = Path(os.environ.get("CONSO_MIS_WORKBOOK", ""))
+STANDALONE_XLSX_PATH = Path(os.environ.get("STANDALONE_SALES_WORKBOOK", ""))
+ANNUAL_XLSX_PATH     = Path(os.environ.get("ANNUAL_SALES_WORKBOOK", ""))
+FS_SEGMENT_PATH      = Path(os.environ.get("FINANCIAL_STATEMENT_WORKBOOK", ""))
+
+SHEET_TX           = os.environ.get("CONSO_TX_SHEET", "")
+SHEET_ENTITY_PL    = os.environ.get("CONSO_ENTITY_PL_SHEET", "")
+SHEET_GROUP_PL     = os.environ.get("CONSO_GROUP_PL_SHEET", "")
+SHEET_ANNUAL_BASE  = os.environ.get("ANNUAL_SALES_SHEET", "")
+SHEET_SEGMENT      = os.environ.get("SEGMENT_DISCLOSURE_SHEET", "")
+
 OUT_HTML_PATH = BASE / "CEO_Dashboard_Conso.html"
 
 MONTHS = ["Apr", "May", "Jun", "Jul"]
 
-# Verified 2026-08 against the transaction extract’s own ENTITY column values exactly.
+# Verified against the consolidated transaction sheet's own ENTITY column
+# values exactly.
 # 2026-08-11: this is still used as-is for the other 6 entities (each is a
 # single-country subsidiary, so its own country IS its real zone), but NO
 # LONGER for "ADF Foods Ltd (Standalone)" -- Standalone is predominantly an exporter
@@ -86,37 +111,33 @@ ENTITY_DISPLAY_ORDER = [
 ]
 
 # Canonical taxonomy = the workbook's own FINANCIAL GROUP / FINANCIAL BRAND
-# columns (verified 2026-08: 10 and 9 distinct values respectively), listed
-# with Standalone's own 8 first for a familiar order, then the Group-only
-# extras appended.
+# management-reporting columns, listed with Standalone's own categories
+# first for a familiar order, then the Group-only extras appended.
 CATEGORY_ORDER = ["FROZEN FOODS", "READY TO EAT", "CHUTNEY", "PICKLES", "PASTE & SAUCES", "SPICES", "OTHERS", "TAMARIND", "GHEE", "TEA"]
 BRAND_ORDER = ["ASHOKA BRAND", "OTHERS BRAND", "UNBRANDED", "CAMEL BRAND", "TRULY INDIAN", "AEROPLANE BRAND", "KHANSAAMA BRAND", "SOUL BRAND"]
 
-# the transaction extract’s FINANCIAL BRAND column has both 'SOUL' and 'SOUL BRAND' as
-# distinct raw values across different entities/rows -- confirmed 2026-08 by
-# a reader to be the same brand, not two real ones (a data-entry
-# inconsistency in the source workbook, not a genuine second brand).
-# Normalized here at ingestion so they aggregate as one.
+# The FINANCIAL BRAND column carries both 'SOUL' and 'SOUL BRAND' across
+# different entities/rows: two spellings of the same brand appear across
+# entities; normalised at ingestion so they aggregate as one.
 BRAND_NAME_FIX = {"SOUL": "SOUL BRAND"}
 ZONE_ORDER = ["North America", "UK", "Middle East", "Europe", "Asia Pacific", "India"]
 
-# Standalone's own workbook (same one refresh_ceo_dashboard.py reads) has a
-# real, monthly-granular Zone-wise-sales breakdown across these same 6
-# zones -- added 2026-08-11 so Conso's Zone table isn't just a 4-zone
-# entity-location proxy that's silently missing Middle East/Europe
-# entirely (no Conso entity is based there, but Standalone sells there).
-# Same short-form labels as refresh_ceo_dashboard.py's ZONE_NAME_FIX, kept
-# as a deliberate small duplication rather than importing that module.
-STANDALONE_XLSX_PATH = BASE / os.environ.get("STANDALONE_SALES_WORKBOOK", "")
+# The standalone sales analytics workbook (the same one
+# refresh_ceo_dashboard.py reads) has a real, monthly-granular
+# Zone-wise-sales breakdown across these same 6 zones -- merged in so Conso's
+# Zone table isn't just a 4-zone entity-location proxy that omits Middle
+# East/Europe entirely (no Conso entity is based there, but Standalone sells
+# there). Same short-form labels as refresh_ceo_dashboard.py's ZONE_NAME_FIX,
+# kept as a deliberate small duplication rather than importing that module.
 STANDALONE_ZONE_NAME_FIX = {
     "NORTH AMERICA": "North America", "UNITED KINGDOM": "UK",
     "WESTERN EUROPE": "Europe", "GULF COUNTRIES": "Middle East",
     "ASIA PACIFIC": "Asia Pacific", "INDIA": "India",
 }
 
-# MIS entity-column order in `Summary-ADFL Conso 2025` -- confirmed by exact
-# numeric match against the transaction extract (e.g. ADFIL column = 'ADF Foods Australia',
-# not a separate India entity as the name suggests).
+# Entity-column order in the per-entity monthly P&L sheet -- confirmed by
+# exact numeric match against the consolidated transaction sheet (e.g. the
+# ADFIL column maps to 'ADF Foods Australia').
 MIS_ENTITY_TO_DISPLAY = {
     "ADFL": "ADF Foods Ltd (Standalone)",
     "ADFIL": "ADF Foods Australia",
@@ -133,22 +154,18 @@ MIS_ENTITY_COLS = {
 MIS_ENTITY_ORDER = ["ADFL", "ADFIL", "TELLURIC", "ADF UK", "ADFHL", "ADF USA", "VIB NJ LLC", "Total"]
 
 # ==============================================================================
-# 12M (FY26 vs FY25) dataset -- added 2026-08-10, sourced ENTIRELY from a new
-# audited Financial-Statement-basis workbook the operator provides (real FY25
-# Group-wide data didn't exist anywhere before this). See module docstring
-# for why this REPLACES the earlier extract-quarterly-based 12M approach
-# rather than being layered alongside it (mixing pre-elimination quarterly
-# sales with audited annual FS figures would produce a mismatched-basis
-# growth% -- the exact class of bug already found and fixed once this
-# session for the 4M KPI reference tiles).
+# 12M (FY26 vs FY25) dataset -- sourced ENTIRELY from audited
+# Financial-Statement-basis sources, which is where Group-wide FY25 data
+# lives. See the module docstring for why this REPLACES the earlier
+# quarterly-transaction-based 12M approach rather than being layered
+# alongside it: mixing pre-elimination quarterly sales with audited annual
+# FS figures would put the two years on different bases, and both years have
+# to be measured on the same basis.
 # ==============================================================================
-ANNUAL_XLSX_PATH = BASE / os.environ.get("ANNUAL_SALES_WORKBOOK", "")
-FS_SEGMENT_PATH = BASE / os.environ.get("FS_SEGMENT_WORKBOOK", "")
-
 ANNUAL_FY_CUR, ANNUAL_FY_PY = "FY 2025-26", "FY 2024-25"
 
-# 'Region wise Sales Base' sheet's own entity spelling -> this script's
-# canonical display names (verified 1:1, no ambiguity like the 4M MIS
+# The annual region-wise sales sheet's own entity spelling -> this script's
+# canonical display names (verified 1:1, no ambiguity like the 4M
 # ADFIL/Australia mapping).
 ANNUAL_ENTITY_FIX = {
     "Standalone": "ADF Foods Ltd (Standalone)",
@@ -160,9 +177,9 @@ ANNUAL_ENTITY_FIX = {
     # 'ADF Foods USA' already matches this script's own name.
 }
 
-# The sheet has case-inconsistent duplicates for a few values (TEA/Tea,
-# SPICES/Spices, AUSTRALIA/Australia, INDIA/India) -- normalized to one
-# canonical spelling per value so they aggregate as one, not two rows.
+# A few values appear in more than one casing (TEA/Tea, SPICES/Spices,
+# AUSTRALIA/Australia, INDIA/India) -- normalized to one canonical spelling
+# per value so they aggregate as one row, not two.
 ANNUAL_CATEGORY_FIX = {
     "Frozen Breads": "FROZEN FOODS", "Frozen Snacks": "FROZEN FOODS", "Frozen Vegetables/Others": "FROZEN FOODS",
     "Ready to eat": "READY TO EAT", "Chutneys": "CHUTNEY", "Pickles": "PICKLES",
@@ -178,9 +195,9 @@ ANNUAL_BRAND_FIX = {
 }
 ANNUAL_BRAND_ORDER = ["ASHOKA BRAND", "TRULY INDIAN", "CAMEL BRAND", "AEROPLANE BRAND", "SOUL BRAND", "KHANSAAMA BRAND", "OTHERS BRAND"]
 
-# Region_SA is used, not the sheet's own 'ZONE' column (mostly blank/#N/A
-# for most rows, confirmed 2026-08-10) -- Region_SA is customer-destination
-# based (real export markets) and complete across all rows.
+# Region_SA is used, not the sheet's own 'ZONE' column, which is not
+# populated for most rows -- Region_SA is customer-destination based (real
+# export markets) and complete across all rows.
 ANNUAL_REGION_FIX = {"AUSTRALIA": "Asia Pacific", "Australia": "Asia Pacific", "Others": "Asia Pacific",
                       "USA": "North America", "Canada": "North America",
                       "UK": "United Kingdom", "EU": "Western Europe", "GCC": "Gulf Countries",
@@ -245,16 +262,16 @@ def rank_by_value(rows):
 
 
 # ==============================================================================
-# 1. the transaction extract -- raw transaction rows (cols A-M only; N onward is
-#    unrelated scratch/documentation text baked into unused columns, not data)
+# 1. Consolidated transaction sheet -- raw transaction rows (cols A-M only;
+#    columns beyond M are outside the dataset)
 # ==============================================================================
 def load_mis_sales_by_entity_month():
-    """Sales (row 15, `Summary-ADFL Conso 2025`) per entity per month for the
-    current FY27 4M period -- the P&L's own control total, used by
-    load_conso_data() to rescale the transaction extract’s raw entity-month figures. See
-    that function's docstring for why."""
+    """Sales per entity per month for the current FY27 4M period, read from
+    the per-entity monthly P&L sheet -- the P&L's own control total, used by
+    load_conso_data() to rescale the transaction sheet's raw entity-month
+    figures. See that function's docstring for why."""
     wb = openpyxl.load_workbook(MIS_PATH, data_only=True)
-    ws = wb["Summary-ADFL Conso 2025"]
+    ws = wb[SHEET_ENTITY_PL]
     out = defaultdict(dict)
     for month, cols in MIS_ENTITY_COLS.items():
         for code, col in zip(MIS_ENTITY_ORDER, cols):
@@ -267,24 +284,23 @@ def load_mis_sales_by_entity_month():
 
 
 def load_conso_data():
-    """2026-08-10: V3's raw entity-month totals for ADF Holdings USA / ADF
-    Foods USA (Apr-Jun) no longer tie to the MIS-sourced Entity P&L the way
-    V2's did -- a full per-entity, per-month reconciliation found material
-    gaps for those two entities (July always matched exactly).
-    Per explicit user instruction ("take as per the P&L only"), every FY27
-    row here is rescaled by a per-(entity, month) factor = MIS Sales /
-    the transaction extract’s own raw sum for that entity-month, so every downstream
-    Category/Brand/Zone/Sub-category table ties exactly to the P&L again --
-    the transaction extract still supplies the category/brand MIX (its actual strength),
-    the P&L supplies the LEVEL. 'Consolidation Adjustment' -- a new
-    pseudo-entity in V3 with no MIS/P&L counterpart -- is dropped entirely
-    for the same reason (the P&L doesn't recognize it, so neither do we).
-    PY (FY26) figures are left untouched -- no MIS entity-month history
-    exists to rescale against; the transaction extract remains the sole PY source, same
-    as before.
+    """A full per-entity, per-month reconciliation shows the transaction
+    sheet's raw entity-month totals for two of the US entities (Apr-Jun)
+    sitting apart from the Entity P&L taken from the management report
+    (July matches exactly). By design the P&L is the control total: every
+    FY27 row here is rescaled by a per-(entity, month) factor = P&L Sales /
+    the transaction sheet's own raw sum for that entity-month, so every
+    downstream Category/Brand/Zone/Sub-category table ties exactly to the
+    P&L -- the transaction sheet supplies the category/brand MIX (its actual
+    strength), the P&L supplies the LEVEL. The 'Consolidation Adjustment'
+    pseudo-entity has no P&L counterpart and is dropped entirely for the
+    same reason (the P&L doesn't recognize it, so neither does this build).
+    PY (FY26) figures are left untouched -- no entity-month P&L history
+    exists to rescale against, so the transaction sheet remains the sole PY
+    source.
     """
     wb = openpyxl.load_workbook(XLSM_PATH, data_only=True, keep_vba=False)
-    ws = wb["the transaction extract"]
+    ws = wb[SHEET_TX]
     rows = []
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
         entity, fy, qtr, month = row[0], row[1], row[2], row[3]
@@ -331,12 +347,12 @@ def filter_entity(rows, entity):
 
 
 def compute_true_rescale_factors(rows, true_kpis):
-    """2026-08-11, per explicit user instruction ('all the totals should
-    match exactly as per the total sales'): external_only()'s RELATED PARTY
-    exclusion ties CLOSE to the true, audited consolidated Sales figure
-    (from the consolidated management sheet) but not exactly -- the transaction-
-    level flag and the formal consolidation elimination entry are two
-    independently-maintained numbers. This computes a second rescale
+    """By design every total must match the consolidated Sales figure
+    exactly. external_only()'s RELATED PARTY exclusion ties CLOSE to the
+    true, audited consolidated Sales figure (from the group consolidated
+    P&L sheet) but not exactly -- the transaction-level flag and the formal
+    consolidation elimination entry are two independently-maintained
+    numbers. This computes a second rescale
     factor, same technique as load_conso_data()'s MIS rescale: a
     multiplicative factor per period-bucket, computed from `rows`' own
     external-only sum vs the true figure, so the total ties exactly once
@@ -391,9 +407,9 @@ def load_standalone_zone_rows(conso_rows_ext):
     """Standalone's real, monthly-granular Zone-wise-sales split (same
     workbook refresh_ceo_dashboard.py reads for the Standalone dashboard).
 
-    2026-08-12, per explicit user instruction ("not even single decimal
-    should be missed"): rescaled so each (fy, month) bucket's sum is EXACT
-    to Standalone's own already-fully-corrected total in `conso_rows_ext`
+    By design not a single decimal may be lost: rescaled so each (fy, month)
+    bucket's sum is EXACT to Standalone's own already-fully-corrected total
+    in `conso_rows_ext`
     (the same external-only, true-rescaled figure Category/Brand use) --
     factor = target / raw_zone_sum, applied per zone. This replaces an
     earlier two-step approximation (an overall external-sales ratio, then
@@ -449,21 +465,19 @@ def load_standalone_zone_rows(conso_rows_ext):
 
 
 def external_only(rows):
-    """2026-08-11, per explicit user instruction: Category/Brand/Zone/
-    Sub-category/Top/Growth tables should show the TRUE, elimination-
-    adjusted figures, not the pre-elimination gross sum-of-entities basis --
-    confirmed by an independent user-supplied reconciliation sheet
-    ('Q1 FY27 PROPORTIONATELY ALIGNED TO MIS'), which ties almost exactly
-    (within normal rounding) to excluding the transaction extract’s own 'RELATED PARTY'
-    rows (CUSTOMER TYPE column) -- the actual intercompany flag, discovered
-    2026-08-11. 'OTHER PARTY' = external/true; 'RELATED PARTY' = intercompany,
+    """By design the Category/Brand/Zone/Sub-category/Top/Growth tables show
+    the TRUE, elimination-adjusted figures, not the pre-elimination gross
+    sum-of-entities basis -- confirmed against an independent reconciliation
+    that was added as a further source, which ties almost exactly (within
+    normal rounding) to excluding the transaction sheet's own 'RELATED
+    PARTY' rows (CUSTOMER TYPE column), the actual intercompany flag.
+    'OTHER PARTY' = external/true; 'RELATED PARTY' = intercompany,
     eliminated in true consolidation. The Entity P&L table (build_entities)
     deliberately does NOT use this filter -- its 'TOTAL (Sum of Entities)'
-    row is meant to stay the gross, pre-elimination figure (matching the MIS
-    Summary-ADFL Conso 2025 sheet), with the single 'Eliminations' line
-    (added earlier, per explicit user instruction to keep it as one lump
-    Group-level row rather than a per-entity breakdown) bridging to
-    'TOTAL (Consolidated)'.
+    row is meant to stay the gross, pre-elimination figure (matching the
+    per-entity monthly P&L sheet), with the single 'Eliminations' line kept
+    as one lump Group-level row rather than a per-entity breakdown, bridging
+    to 'TOTAL (Consolidated)'.
     """
     return [r for r in rows if r["customerType"] != "RELATED PARTY"]
 
@@ -474,9 +488,9 @@ def external_only(rows):
 def monthly_table(rows, dim_key, order, q4_lookup):
     """One row per distinct `dim_key` value: Apr/May/Jun/Jul FY27 + FY26,
     YTD totals, monthly + overall YoY growth, mix%, plus a genuine Q4 FY26
-    reference pulled from `q4_lookup` (the transaction extract’s own QTR='Q4' rows for
-    FY26 -- real data, not a placeholder, since the transaction extract carries full-year
-    history). Appends a TOTAL row."""
+    reference pulled from `q4_lookup` (the transaction sheet's own QTR='Q4'
+    rows for FY26 -- real data, not a placeholder, since that sheet carries
+    full-year history). Appends a TOTAL row."""
     totals = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
     for r in rows:
         totals[r[dim_key]][r["fy"]][r["month"]] += r["value"]
@@ -496,12 +510,12 @@ def monthly_table(rows, dim_key, order, q4_lookup):
         aprPy, mayPy, junPy, julPy = (fy26.get(m, 0.0) for m in MONTHS)
         ytdCur, ytdPy = apr + may + jun + jul, aprPy + mayPy + junPy + julPy
         q4py_val = q4_lookup.get(v, 0.0)
-        # 2026-08-11: previously dropped rows whenever Apr-Jul was all zero,
+        # An earlier version dropped rows whenever Apr-Jul was all zero,
         # even if a real Q4 FY26 reference value existed for that name (a
         # category/brand that only sold in that quarter, not repeated in the
-        # current comparison window) -- silently orphaning it from `out`
-        # while the TOTAL row's q4Py (summed independently below from the
-        # full q4_lookup) still counted it, so TOTAL didn't match the sum of
+        # current comparison window) -- orphaning it from `out` while the
+        # TOTAL row's q4Py (summed independently below from the full
+        # q4_lookup) still counted it, so TOTAL didn't match the sum of
         # displayed rows. Now kept (as an all-zero-except-q4Py row) so the
         # two stay consistent.
         if ytdCur == 0 and ytdPy == 0 and q4py_val == 0:
@@ -614,15 +628,14 @@ def build_dim_by_entity_4m(all_rows, dim_key, order):
 
 
 # ==============================================================================
-# 12M (FY26 vs FY25) tables -- ANNUAL ONLY, sourced from the audited
-# annual sales workbook. No
-# quarterly breakdown exists in this source for either year -- see module
-# docstring for why this replaces rather than supplements the earlier
-# the transaction extract-quarterly approach.
+# 12M (FY26 vs FY25) tables -- ANNUAL ONLY, sourced from the annual
+# category/entity sales workbook. No quarterly breakdown exists in this
+# source for either year -- see the module docstring for why this replaces
+# rather than supplements the earlier quarterly-transaction approach.
 # ==============================================================================
 def load_annual_transactions():
     wb = openpyxl.load_workbook(ANNUAL_XLSX_PATH, data_only=True)
-    ws = wb["Region wise Sales Base"]
+    ws = wb[SHEET_ANNUAL_BASE]
     rows = []
     for row in ws.iter_rows(min_row=3, max_row=ws.max_row, values_only=True):
         entity, country, region_sa, zone, brand, cat_sa, subcat, fingroup, cif_abs, cif_cr, fy, remarks = row[:12]
@@ -643,7 +656,8 @@ def load_annual_transactions():
 def build_annual_table(rows, dim_key, order):
     """One row per distinct `dim_key` value: real audited cur (FY26) and py
     (FY25) on the SAME basis (both from this same workbook) -- growth% is
-    genuine here, unlike the old the transaction extract-vs-nothing 12M attempt."""
+    genuine here, unlike the earlier 12M approach, which had no comparable
+    prior-year base for most entities."""
     totals = defaultdict(lambda: defaultdict(float))
     for r in rows:
         totals[r[dim_key]][r["fy"]] += r["value"]
@@ -729,9 +743,9 @@ def build_dim_by_entity_annual(all_rows, dim_key, order):
 def leader_rows_from_annual(annual_rows):
     """LEADER_COLS_12M shape (name/cur/py/gr12m/grQ4/signal) for the Exec
     Summary signal tables in 12M mode. grQ4 is None -- no quarterly
-    breakdown in this source (see module docstring). `py` (2026-08-12, per
-    explicit user instruction: show 12M FY25 beside 12M FY26 everywhere the
-    latter appears) is both displayed as its own column and used by the
+    breakdown in this source (see module docstring). `py` (by design, 12M
+    FY25 is shown beside 12M FY26 everywhere the latter appears) is both
+    displayed as its own column and used by the
     page's withTotalRow()/buildTotalRow() to show a genuine Total 'FY25'
     figure instead of a misleading blank/zero."""
     out = []
@@ -775,8 +789,8 @@ def build_top_sub_annual(rows):
 
 
 # ==============================================================================
-# 2. MIS report -- Entity-wise P&L (Summary-ADFL Conso 2025) and the true,
-#    elimination-adjusted Group KPIs (consolidated management sheet)
+# 2. Management report -- Entity-wise P&L (per-entity monthly P&L sheet) and
+#    the true, elimination-adjusted Group KPIs (group consolidated P&L sheet)
 # ==============================================================================
 def mis_entity_row(ws, row_num):
     totals = defaultdict(float)
@@ -790,17 +804,17 @@ def mis_entity_row(ws, row_num):
 
 def build_entities(conso_rows):
     wb = openpyxl.load_workbook(MIS_PATH, data_only=True)
-    ws = wb["Summary-ADFL Conso 2025"]
+    ws = wb[SHEET_ENTITY_PL]
 
-    revenue = mis_entity_row(ws, 15)   # Sales -- ties exactly to the transaction extract, verified
+    revenue = mis_entity_row(ws, 15)   # Sales -- ties exactly to the transaction sheet, verified
     ebitda = mis_entity_row(ws, 49)    # EBIDTA
     pbt = mis_entity_row(ws, 51)       # PBT
     pat = mis_entity_row(ws, 55)       # PAT
 
     # PY (FY26) entity-wise EBITDA/PBT/PAT genuinely don't exist anywhere in
-    # this MIS workbook (no prior-year entity-wise P&L sheet). PY Revenue
-    # (Sales-basis, comparable to `revenue` above) IS available, from
-    # the transaction extract’s own FY26 Apr-Jul entity totals.
+    # the management report (no prior-year entity-wise P&L sheet). PY Revenue
+    # (Sales-basis, comparable to `revenue` above) IS available, from the
+    # transaction sheet's own FY26 Apr-Jul entity totals.
     py_revenue_by_entity = defaultdict(float)
     for r in conso_rows:
         if r["fy"] == "FY26" and r["month"] in MONTHS:
@@ -843,41 +857,38 @@ def compute_health_annual(revenue, ebitda, pbt, ebitda_pct, pbt_pct):
 
 
 def load_fs_entity_pnl():
-    """Real, audited entity-wise Revenue/EBITDA/PBT/PAT for FY26 vs FY25 --
-    added 2026-08-12 per explicit user instruction ('add EBITDA, PBT, PAT
-    and its comparison ... as you are showing in Standalone'). An earlier
-    investigation had concluded no such source existed; a follow-up deep
-    dive (2026-08-12) found it does, in the SAME board Finalisation
-    workbook already used for the group segment figures (FS_SEGMENT_PATH)
-    -- each entity has its own statutory P&L sheet with FY26 and FY25
-    columns. Exact cell references below were mapped and verified during
-    that investigation (cross-checked against FORM AOC-I subsidiary
-    statements and the Group P&L Consol sheet's own entity-column sanity
-    totals).
+    """Real, audited entity-wise Revenue/EBITDA/PBT/PAT for FY26 vs FY25, so
+    the 12M Profitability tab can show EBITDA/PBT/PAT per entity the way
+    Standalone does. An earlier investigation had concluded no such source
+    existed; a follow-up deep dive found it does, in the SAME board
+    financial-statement workbook already used for the group segment figures
+    (FS_SEGMENT_PATH) -- each entity has its own statutory P&L sheet with
+    FY26 and FY25 columns. The per-entity mapping below was built and
+    verified during that investigation (cross-checked against FORM AOC-I
+    subsidiary statements and the group consolidated P&L sheet's own
+    entity-column sanity totals).
 
     EBITDA is ALWAYS derived here as PBT + Depreciation&Amortisation +
     Finance Cost - Other Income (the permanent, non-negotiable house
-    formula, verified: Impairment = 0 on every one of these sheets) --
-    NEVER read from a sheet's own labelled 'EBITDA' row, which was found to
-    be inconsistent between columns on the same sheet (it omits
-    subtracting Other Income there, even though the FY26 column on the
-    SAME sheet gets it right).
+    formula, verified: Impairment = 0 on every one of these sheets) and
+    never taken from any pre-computed row, so every entity and every year is
+    measured on exactly one definition.
 
-    Two source-data quirks handled per-entity:
+    Two per-entity handling notes:
       - ADF Holdings USA / ADF Foods USA / Vibrant Foods NJ LLC: their INR
-        columns are labelled 'Rupees in Lakhs' but the cached values are
-        actually absolute Rupees -- divided by 100,000 here.
+        figures come through in absolute Rupees, so a unit divisor brings
+        them onto the same Lakhs basis as the rest.
       - ADF Foods Australia: acquired 9-Jul-2025 (confirmed via FORM
         AOC-I) -- genuinely did not exist in FY25, so its `py` is None
         (not a data gap, a real business fact), and even its FY26 column
         is a partial ~8.7-month period, not a full year.
 
-    read_only=True: this 124-sheet, ~9MB workbook is dramatically slower to
-    open in the default mode (which builds a full mutable object model,
+    read_only=True: this large, many-sheeted workbook is dramatically slower
+    to open in the default mode (which builds a full mutable object model,
     including styles, for every sheet) than in read_only/streaming mode --
-    a first attempt without this timed out after 20+ minutes with no
-    output. Direct cell access (ws[f"{col}{row}"]) still works fine in
-    read_only mode, same as load_segment_disclosure_kpis() already does.
+    a first attempt without this did not finish. Direct cell access
+    (ws[f"{col}{row}"]) still works fine in read_only mode, same as
+    load_segment_disclosure_kpis() already does.
     """
     wb = openpyxl.load_workbook(FS_SEGMENT_PATH, data_only=True, read_only=True)
 
@@ -914,23 +925,23 @@ def load_fs_entity_pnl():
     for name, spec in specs.items():
         out[name] = load_one(*spec)
 
-    # True, audited Group Consolidated (elimination-adjusted) -- same
-    # 'P & L Consol' sheet, Total columns K (FY26) / AC (FY25). Verified:
-    # revenue here matches the audited total revenue exactly
-    # -- same figure, cross-checked two ways.
+    # True, audited Group Consolidated (elimination-adjusted) -- the same
+    # consolidated P&L sheet's own Total columns. Verified: revenue here
+    # matches the audited total revenue exactly -- same figure,
+    # cross-checked two ways.
     out["__TRUE__"] = load_one("P & L Consol", "K", "AC", 10, 11, 18, 19, 24, 33, 1.0, False)
     return out
 
 
 def build_entities_annual(fs_entity_pnl):
-    """Entity-wise Revenue/EBITDA/PBT/PAT for 12M, FY26 vs FY25 -- added
-    2026-08-12 (see load_fs_entity_pnl()'s docstring). Sourced entirely
-    from each entity's own audited P&L (gross, pre-elimination, same as
-    how the 4M Profitability tab's entity figures are gross/pre-
-    elimination from the MIS Summary sheet) -- NOT the transactional
-    annual sales workbook Category/Brand/Zone use, so
-    this table's Revenue will not tie to Category/Brand/Zone below, by the
-    same design already established and disclosed for the 4M tab.
+    """Entity-wise Revenue/EBITDA/PBT/PAT for 12M, FY26 vs FY25 (see
+    load_fs_entity_pnl()'s docstring). Sourced entirely from each entity's
+    own audited P&L (gross, pre-elimination, same as how the 4M
+    Profitability tab's entity figures are gross/pre-elimination from the
+    per-entity monthly P&L sheet) -- NOT the annual category/entity sales
+    workbook that Category/Brand/Zone use, so this table's Revenue will not
+    tie to Category/Brand/Zone below, by the same design already established
+    and disclosed for the 4M tab.
     """
     entities = []
     for name in ENTITY_DISPLAY_ORDER:
@@ -1007,8 +1018,8 @@ def build_exec_kpis(sales_cur, sales_py, ebitda_cur, ebitda_py, pbt_cur, pbt_py,
         the other 6 entities don't ship FCL containers from India.
       - "Export Value" -- meaningful for Standalone (an India-based
         manufacturer whose sales are predominantly export) but doesn't translate to
-        a Group-wide concept, and the transaction extract has no export/domestic flag to
-        compute one even if it did.
+        a Group-wide concept, and the transaction sheet has no export/
+        domestic flag to compute one even if it did.
       - "Realization Growth" (₹/kg) -- blocked by the same volume-data gap
         already documented for the deferred Vol vs Value tabs: only
         Standalone tracks volume in true KG, the other 6 entities only have
@@ -1018,7 +1029,7 @@ def build_exec_kpis(sales_cur, sales_py, ebitda_cur, ebitda_py, pbt_cur, pbt_py,
     dropped, since no true elimination-adjusted figure for that specific
     sub-period exists anywhere in the MIS source (see caller for why). Both
     included tiles use the SAME true, elimination-adjusted basis as every
-    other KPI here (see caller) -- not the the transaction extract pre-elimination sum
+    other KPI here (see caller) -- not the pre-elimination transaction sum
     used for the Category/Brand/Zone tables lower on this tab, which is
     disclosed separately.
     """
@@ -1038,10 +1049,10 @@ def build_exec_kpis(sales_cur, sales_py, ebitda_cur, ebitda_py, pbt_cur, pbt_py,
 
 
 def add_eliminations_row(entities, true_kpis):
-    """2026-08-10, per explicit user instruction: show 'Eliminations' as its
-    own line in the Entity-wise P&L table, and make the table's grand total
-    reflect the TRUE, elimination-adjusted Group figure -- not just the
-    pre-elimination sum of entities. Previously the table only showed
+    """By design 'Eliminations' is shown as its own line in the Entity-wise
+    P&L table, and the table's grand total reflects the TRUE,
+    elimination-adjusted Group figure -- not just the pre-elimination sum of
+    entities. Previously the table only showed
     'TOTAL (Sum of Entities)' (pre-elim) while the Exec Summary KPI tiles
     showed the true consolidated figure elsewhere on the page, with an
     on-page note explaining the two wouldn't match; this closes that gap by
@@ -1080,22 +1091,21 @@ def add_eliminations_row(entities, true_kpis):
 
 
 def build_exec_kpis_by_entity(entities, category_by_entity):
-    """2026-08-11, per explicit user instruction: the entity-filtered Exec
-    Summary Revenue tile now uses that entity's TRUE, external-only revenue
-    (its Category table's own TOTAL row, same source as the Category/Brand/
-    Zone tables shown right below it on the same filtered view) instead of
-    its gross (pre-elimination) MIS figure -- the two could differ hugely
-    for entities with heavy intercompany activity (for one US entity the
-    gross figure was roughly double the external one), which looked like a bug when the
-    KPI tile and the tables beneath it told very different stories for the
-    same filtered entity.
+    """By design the entity-filtered Exec Summary Revenue tile uses that
+    entity's TRUE, external-only revenue (its Category table's own TOTAL
+    row, same source as the Category/Brand/Zone tables shown right below it
+    on the same filtered view) instead of its gross (pre-elimination)
+    management-report figure -- the two can differ materially for entities
+    with heavy intercompany activity, so the KPI tile and the tables beneath
+    it are put on one basis for the same filtered entity.
 
-    EBITDA/PBT/PAT stay on the gross/MIS basis -- no external-only P&L
-    breakdown exists below Revenue (the transaction extract has no COGS/profit columns
-    at all), so there is no alternative source for those three. This means
-    their margin %s (computed against gross EBITDA/PBT/PAT over now-smaller
-    external Revenue) will read higher than a true margin would -- disclosed
-    on-page rather than silently shown as if it were apples-to-apples.
+    EBITDA/PBT/PAT stay on the gross, management-report basis -- no
+    external-only P&L breakdown exists below Revenue (the transaction sheet
+    has no COGS/profit columns at all), so there is no alternative source
+    for those three. This means their margin %s (computed against gross
+    EBITDA/PBT/PAT over now-smaller external Revenue) will read higher than
+    a true margin would -- disclosed on-page rather than presented as if it
+    were apples-to-apples.
     """
     out = {}
     for e in entities:
@@ -1117,14 +1127,13 @@ def build_exec_kpis_by_entity(entities, category_by_entity):
 
 def load_segment_disclosure_kpis():
     """True, audited, elimination-adjusted Group Revenue and PBT for FY26 vs
-    FY25 -- from the audited segment figures (the board financial-statement
-    File_March 2026_v51.xlsx), the same figures published in the FY26
-    annual results. Row/col references verified 2026-08-10 directly against
-    the sheet: row 13 'Total Segment Revenue', row 24 'Total Profit Before
-    Tax', col E = year ended 31-03-2026 (FY26), col F = year ended
-    31-03-2025 (FY25)."""
+    FY25 -- read from the board's own audited segment disclosure sheet, the
+    same figures published in the FY26 annual results: the 'Total Segment
+    Revenue' and 'Total Profit Before Tax' lines, for the years ended
+    31-03-2026 (FY26) and 31-03-2025 (FY25). The mapping was verified
+    directly against the sheet."""
     wb = openpyxl.load_workbook(FS_SEGMENT_PATH, data_only=True, read_only=True)
-    ws = wb[os.environ.get("FS_SEGMENT_SHEET", "")]
+    ws = wb[SHEET_SEGMENT]
 
     def val(row, col):
         v = ws.cell(row=row, column=col).value
@@ -1207,7 +1216,7 @@ def main():
         print(f"ERROR: {OUT_HTML_PATH} not found -- run the HTML template setup first.")
         sys.exit(1)
 
-    print("Reading the transaction extract ...")
+    print("Reading consolidated transaction rows ...")
     conso_rows = load_conso_data()
     print(f"  -> {len(conso_rows)} rows (FY25/FY26/FY27)")
 
@@ -1220,12 +1229,13 @@ def main():
     print(f"  -> {len(conso_rows_ext)} rows after excluding RELATED PARTY (intercompany)")
 
     # Read the true, audited consolidated Sales figures early (needed to
-    # rescale conso_rows_ext to tie exactly -- see rescale_external_to_true()).
+    # rescale conso_rows_ext to tie exactly -- see
+    # compute_true_rescale_factors()).
     # Re-read again below via `val()` for the other P&L lines (EBITDA/PBT/PAT/
     # COGS) needed for the KPI tiles -- this workbook open is cheap and
     # keeping the two reads separate avoids restructuring the KPI section.
     wb_mis_early = openpyxl.load_workbook(MIS_PATH, data_only=True)
-    ws_consol_early = wb_mis_early[os.environ.get("MIS_CONSOL_SHEET", "")]
+    ws_consol_early = wb_mis_early[SHEET_GROUP_PL]
 
     def val_early(row, col):
         v = ws_consol_early[f"{col}{row}"].value
@@ -1240,9 +1250,10 @@ def main():
 
     # 2026-08-11: Zone uses a hybrid source -- the other 6 entities are each
     # a single-country subsidiary, so their existing entity-location proxy
-    # (conso_rows_ext, ENTITY_ZONE) IS their real zone; only Standalone (a
-    # predominantly an exporter) needs its real, multi-zone split pulled in separately
-    # from its own workbook. load_standalone_zone_rows() rescales that split
+    # (conso_rows_ext, ENTITY_ZONE) IS their real zone; only Standalone
+    # (predominantly an exporter) needs its real, multi-zone split pulled in
+    # separately from its own workbook. load_standalone_zone_rows() rescales
+    # that split
     # to tie EXACTLY to conso_rows_ext's own (already fully-rescaled)
     # Standalone total -- see that function's docstring.
     print("Reading Standalone's own Zone-wise-sales split ...")
@@ -1275,7 +1286,7 @@ def main():
     kpis_by_entity = build_exec_kpis_by_entity(entities, category_by_entity)
 
     wb_mis = openpyxl.load_workbook(MIS_PATH, data_only=True)
-    ws_consol = wb_mis[os.environ.get("MIS_CONSOL_SHEET", "")]
+    ws_consol = wb_mis[SHEET_GROUP_PL]
 
     def val(row, col):
         v = ws_consol[f"{col}{row}"].value
@@ -1292,22 +1303,17 @@ def main():
     add_eliminations_row(entities, (sales_cur, sales_py, ebitda_cur, pbt_cur, pat_cur))
 
     # Reference tiles -- MUST use the SAME true, elimination-adjusted basis
-    # as the KPIs above (row 4 col S/U), not the transaction extract’s pre-elimination
-    # sum -- verified 2026-08-10: showing a pre-elimination "4M FY26"
-    # reference tile right next to the Revenue tile's true-eliminated
-    # "vs PY" figure looked like an outright wrong number (they're both
-    # nominally "4M FY26" but materially apart), even though each was
-    # individually correct on its own, undisclosed basis.
-    # - 4M FY26 = sales_py itself (col U), already computed above.
-    # - Q1 FY27 (Apr-Jun) = YTD FY27 (4M, col S) minus July 2026 alone
-    #   (col B) -- derived by subtracting two independently-verified,
-    #   unambiguously-labeled cells, NOT by trusting this sheet's own
-    #   "Q2 FY26-27" column label, which turned out to just equal the
-    #   July-2026 figure again (i.e. a quarter-to-date stub, not a real
-    #   quarter total) rather than a genuine Apr-Jun total.
-    # - Q4 FY26 (Jan-Mar 2026) has NO reliable true-eliminated source in
-    #   this sheet at all (it only carries rolling current-year data) --
-    #   dropped rather than guessed at.
+    # as the KPIs above, not the pre-elimination transaction sum: two tiles
+    # both nominally labelled "4M FY26" but sitting on different bases read
+    # as a contradiction, even though each is correct on its own basis.
+    # - 4M FY26 = sales_py itself, already computed above.
+    # - Q1 FY27 (Apr-Jun) = YTD FY27 (4M) minus July 2026 alone -- derived
+    #   by subtracting two independently-verified, unambiguously-labelled
+    #   figures, so the result is a genuine Apr-Jun total on the
+    #   elimination-adjusted basis.
+    # - Q4 FY26 (Jan-Mar 2026) has no true-eliminated source in this sheet,
+    #   which carries rolling current-year data only -- dropped rather than
+    #   guessed at.
     july_2026_sales = val(4, "B")
     q1_fy27_sales_true = sales_cur - july_2026_sales
 
