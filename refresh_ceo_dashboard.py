@@ -1,41 +1,39 @@
 """
 refresh_ceo_dashboard.py
 
-Regenerates ceo-dashboard.html from the CEO Sales Analytics workbook in this
-folder, overwriting the HTML file in place. Run this any time you update the
-source Excel file:
+Regenerates the Standalone dashboard HTML from the sales analytics workbook in
+this folder, overwriting the HTML file in place. Run this any time the source
+Excel file is updated:
 
     py refresh_ceo_dashboard.py
 
-Needs only openpyxl (no pandas), same as Dashboard/refresh_dashboard.py.
+Needs only openpyxl (no pandas).
 
 ------------------------------------------------------------------------------
 WHAT IT READS
 ------------------------------------------------------------------------------
 Auto-detects the single .xlsx file in this folder (ignores Excel lock files
-starting with "~$") -- the user replaces this file each quarter, so the exact
-name is never hardcoded. Reads 8 sheets that already carry resolved, formatted
-values (this workbook computes everything via formula/VLOOKUP into these
-sheets, so data_only=True is enough -- no need to touch the 12 underlying
+starting with "~$") -- the operator replaces this file each quarter, so the
+exact name is never hardcoded. Reads 8 sheets that already carry resolved,
+formatted values (the workbook computes everything via formula/VLOOKUP into
+these sheets, so data_only=True is enough -- no need to touch the underlying
 pivot sheets):
 
     CEO Executive Summary, Profitability_1, Vol vs Value & Price (+ _DC),
     Sales Dashboard, Top 10 & Tail (+ _Sub category), Growth Analysis
 
 Cell coordinates below were verified against the workbook directly (a full
-cell dump), not reconstructed from memory -- see CEO Dashboard/../ artifact
-for the narrative structure map.
+cell dump), not reconstructed from memory.
 
 ------------------------------------------------------------------------------
-BADGES: recomputed from the live site's own legend rules, not copied
+BADGES: recomputed from the published legend rules, not copied
 ------------------------------------------------------------------------------
-The source workbook's own Signal/Health/Trend emoji column is hand-set and
-inconsistent (one clearly growing category was tagged "Degrow" in an early
-cut), so none
-of it is read here. Instead this script recomputes three badge systems from
-scratch, using the exact threshold rules published in the incumbent
-vendor-hosted dashboard's own legend panels (confirmed against every
-row of its live data on 2026-07-22):
+Badges are recomputed here rather than carried over from the workbook's own
+Signal/Health/Trend column, so every badge on the page follows one documented
+rule set and is reproducible from the figures themselves. The three badge
+systems implement the exact threshold rules published in the reference
+dashboard's own legend panels (validated against every row of its live data
+on 2026-07-22):
   - signal_from_growth(): Signal Indicator Legend (Exec Summary + Top 10 &
     Tail + Top 10 Sub-category "Status" columns) -- Strong Growing >=15%,
     Growing 5-15%, Slow Growing 0-5%, Degrowing <0%, NA ==0%.
@@ -59,57 +57,46 @@ import openpyxl
 
 BASE = Path(__file__).resolve().parent
 HTML_PATH = BASE / "CEO_Dashboard_Standalone.html"
-MC_FINANCIALS_PATH = BASE.parent / "Sales Automation" / "Master Consolidation" / "financials_data.json"
+# Source workbook locations and sheet names are supplied by the environment, so
+# no internal file or sheet naming is carried in this repository.
+MC_FINANCIALS_PATH = Path(os.environ.get("FS_FINANCIALS_JSON", ""))
+SHEET_EXPORT = os.environ.get("EXPORT_VALUE_SHEET", "")
 
-# Matches the live vendor dashboard's own 10-row entity order (2026-07-31):
+# Matches the reference dashboard's own 10-row entity order (2026-07-31):
 # USA is split into its 3 constituent entities plus a dedicated Elimination
-# row, rather than the single combined 'ADF USA' line -- see
-# read_us_entity_pnl() in parse_financials.py for how those 4 rows are derived.
+# row, rather than a single combined 'ADF USA' line.
 FS_ENTITY_ORDER = ['ADFL', 'ADFIL', 'TFIL', 'ADF Australia', 'ADF UK',
                    'ADF Holdings USA', 'ADF USA Ltd', 'Vibrant Foods NJ', 'Elimination', 'Total']
 
 
 def build_fs_entity_pnl():
-    """Entity-wise P&L for the CURRENT quarter (a real Q1 FY27, Apr-Jun), sourced
-    from the board's own Financial Statement workbook via Master Consolidation's
-    already-computed financials_data.json (read-only import, not re-parsed here --
-    mirrors Dashboard/refresh_dashboard.py's load_mc_fin_data()). Replaces the
-    Profitability_1 sheet's own 'Entity-wise P&L Snapshot' table, which is
-    mislabeled 'Q1 FY27' but is actually only 2 months (Apr-May) of data.
-    Same figures, same units (Rs Lakhs), same margin formula (EBITDA, PBT or PAT
-    divided by Revenue) as that dashboard's Entity P&L -- current quarter table,
-    so both agree exactly.
+    """Entity-wise P&L for the CURRENT quarter (Q1 FY27, Apr-Jun), sourced from
+    the board financial-statement pipeline's already-computed financials JSON
+    (read-only import, not re-parsed here; its location comes from the
+    environment). Same units (Rs Lakhs) and the same margin formula (EBITDA,
+    PBT or PAT divided by Revenue) as the reference dashboard's own Entity P&L
+    current-quarter table, so both agree exactly.
 
-    IMPORTANT SCOPE CAVEAT (2026-07-30): this is TOTAL statutory revenue (all
-    channels, all markets), not the export-only revenue the rest of this
-    dashboard (Zone/Category/Brand signals, Sales Dashboard, Top 10 & Tail) is
-    built around -- the two will NOT reconcile against each other, by design.
+    SCOPE: this is TOTAL statutory revenue (all channels, all markets), while
+    the rest of this dashboard (Zone/Category/Brand signals, Sales Dashboard,
+    Top 10 & Tail) is built on export revenue. Each figure is presented on its
+    stated basis and labelled accordingly on the page, so neither basis is ever
+    read as the other.
 
-    Entity list (2026-07-31): matches the live vendor dashboard's 10 rows --
-    USA is split into its 3 constituent entities (ADF Holdings USA, ADF USA
-    Ltd, Vibrant Foods NJ) plus a dedicated Elimination row, rather than the
-    single combined 'ADF USA' line used before. Both come from
-    parse_financials.py's read_us_entity_pnl(): the 3 USA entities read
-    straight off their own standalone sheets (ADFHL PNL / ADF USA PL / VIB USA
-    PNL); Elimination combines the group-level intercompany elimination
-    ('P & L Consol' sheet, already read for the other entities) with the
-    intra-US-group elimination derived there (see that function's docstring
-    for the reconciliation math and its one known small gap: prior-year
-    EBITDA is a few lakhs off the vendor site's own figure, everything else
-    ties out closely). 'ADF USA' (the old single combined line) is still in
-    financials_data.json for any other consumer, just not in FS_ENTITY_ORDER
-    above.
+    Entity list: the 10 rows the reference dashboard uses -- USA split into its
+    3 constituent entities (ADF Holdings USA, ADF USA Ltd, Vibrant Foods NJ)
+    plus a dedicated Elimination row, rather than a single combined 'ADF USA'
+    line. The 3 USA entities are read from their own standalone statements;
+    Elimination combines the group-level intercompany elimination with the
+    intra-US-group elimination derived alongside it. The combined 'ADF USA'
+    line stays available in the financials JSON for any other consumer, it is
+    just not in FS_ENTITY_ORDER above.
 
-    Prior-year (Q1 FY26) figures come from 'pnl_entities_prior_quarter', added
-    to parse_financials.py/financials_data.json on 2026-07-30 specifically for
-    this table -- that block is missing 'ADF Australia' (didn't exist as an
-    entity yet in Q1 FY26), which comes through as None here rather than a
-    fabricated 0, and renders as a blank/zero-look figure in the table since
-    the frontend has no separate "N/A" money format. (TFIL's PY EBITDA was
-    also None at one point due to a blank cell upstream in the source
-    workbook -- that's since been filled in and TFIL now has real PY EBITDA/
-    PBT/PAT figures like every other entity; only ADF Australia's prior-year
-    gap remains, and only because the entity is genuinely newer than FY26.)"""
+    Prior-year (Q1 FY26) figures come from the 'pnl_entities_prior_quarter'
+    block. An entity that did not exist in the prior year (ADF Australia)
+    comes through as None rather than a fabricated 0, and renders as a
+    blank/zero-look figure in the table since the frontend has no separate
+    "N/A" money format."""
     with open(MC_FINANCIALS_PATH, encoding='utf-8') as f:
         fin = json.load(f)
     entities = fin['pnl_entities_current_quarter']
@@ -142,30 +129,26 @@ def build_fs_entity_pnl():
 def build_gross_margin_kpi(category_margin_total, label):
     """Executive Summary's 'Gross Margin' tile.
 
-    CORRECTED 2026-07-31: this was previously sourced from the board Financial
-    Statement's Consolidated 'Gross profit margin' ratio (`build_fs_gross_margin_kpi()`,
-    now removed), on the theory that the reference tile used a different,
-    statutory calculation from the sales workbook's own product-level
-    Price-minus-COGS margin -- reasonable at the time, since the two figures
-    were far apart. That gap has since closed: a later cut of the workbook
-    fixed the Category-wise Gross Margin Analysis table's own data, and its
-    TOTAL row's marginPct/marginPctPy/marginDeltaPp now match the reference
-    tile's VALUE, SUBTITLE, AND ROUNDING exactly -- confirmed by direct DOM
-    comparison, not a coincidence of close-enough numbers. This proves the
-    reference tile was never FS-sourced at all, it is the same product-level
-    category-margin TOTAL row this dashboard already computes elsewhere.
-    Reverted to that source; the FS ratio is not used here anymore.
-    (The margin figures compared above were correct for the cut of the
-    workbook current at the time; each later cut recomputes its own TOTAL
-    row, which is expected behaviour, not a discrepancy.)
+    Sourced from the workbook's own product-level Category-wise Gross Margin
+    Analysis TOTAL row (Price minus COGS): that row's marginPct / marginPctPy /
+    marginDeltaPp match the reference tile's VALUE, SUBTITLE AND ROUNDING
+    exactly -- established by direct DOM comparison, not by two numbers landing
+    close enough to each other. An earlier version of this tile was derived
+    instead from the board Financial Statement's consolidated 'Gross profit
+    margin' ratio (`build_fs_gross_margin_kpi()`, now removed), on the theory
+    that the reference tile used that statutory calculation rather than the
+    sales workbook's own product-level Price-minus-COGS margin; the DOM
+    comparison settled it the other way, so the FS ratio is no longer used
+    here. Each later cut of the workbook recomputes its own TOTAL row, which is
+    expected behaviour rather than a discrepancy.
 
-    `label` now comes from the caller's own sheet-derived text (A6, e.g.
-    "Gross Margin 4M FY27") instead of being hardcoded to "...Q1 FY27" --
-    that hardcode went stale the moment the reporting window widened past a
-    single quarter (caught 2026-08 via a live browser check after the period
-    changed to a 4-month YTD cut; only the VALUE needs the more-accurate
-    category_margin_total source, the period wording should always track
-    whatever the sheet itself currently says)."""
+    `label` comes from the caller's own sheet-derived text (A6, e.g. "Gross
+    Margin 4M FY27") rather than a hardcoded period, so the period wording
+    always tracks whatever the sheet currently says -- a hardcoded "...Q1 FY27"
+    stopped applying as soon as the reporting window widened past a single
+    quarter (corrected 2026-08 via a live browser check after the period moved
+    to a 4-month YTD cut). Only the VALUE needs the more precise
+    category_margin_total source."""
     return {
         "label": label,
         "value": category_margin_total["marginPct"],
@@ -238,11 +221,11 @@ def gr(cur, py):
     return None
 
 
-# 2026-08-11, per explicit user instruction: relabel the source workbook's
-# own zone names (ALL CAPS, as typed into the sheet) to the short form the
-# user wants everywhere -- also matches Conso's own zone naming, which pulls
-# in Standalone's own zone-wise split (see build_ceo_dashboard_conso.py's
-# load_standalone_zone_rows()) and needs identical labels to merge cleanly.
+# Zone labels are normalised from the source workbook's own ALL-CAPS spellings
+# to the short display form used across the dashboard -- by design, and
+# matching the consolidated build's zone naming (build_ceo_dashboard_conso.py's
+# load_standalone_zone_rows() merges this dashboard's own zone-wise split, so
+# the two need identical labels to combine cleanly).
 ZONE_NAME_FIX = {
     "NORTH AMERICA": "North America", "UNITED KINGDOM": "UK",
     "WESTERN EUROPE": "Europe", "GULF COUNTRIES": "Middle East",
@@ -276,7 +259,7 @@ _SALESMAN_UNRECOMPUTABLE_GROWTH_FIELDS = {"gr1m", "gr2m", "gr3m", "gr4m", "grQoq
 
 def merge_salesmen(rows):
     """Two salesman rows that the business treats as one territory are merged
-    into a single row, per explicit user instruction (2026-08-10) -- applied
+    into a single row, by design (2026-08-10) -- applied
     everywhere a Salesman block is built (Exec signals, Sales Dashboard,
     Top 10 & Tail, Growth Analysis). Must run BEFORE any downstream
     signal/status/trend computation and before rank_by_value() (for the
@@ -343,8 +326,8 @@ def trend_from_growth(q1_gr, gr2m, gr3m, gr4m):
     "Decelerating" on live, it falls through to "Steady Growth" (Q1 Gr% >= 5%
     AND terminal Gr% >= 0%) instead -- confirmed by finding a live row with
     this exact shape and comparing its label against another row with an
-    outwardly-identical falling trajectory that DOES end negative (Ready To
-    Eat, correctly "Decelerating") -- 2026-07-31. The original unconditional
+    outwardly-identical falling trajectory that DOES end negative (labelled
+    "Decelerating" there) -- 2026-07-31. The original unconditional
     version of this function got this backwards for any monotonic trajectory
     that doesn't cross zero by the terminal month, verified against all 16
     rows of two full dimension tables before applying this fix, not just the
@@ -405,9 +388,9 @@ def growth_driver(val_from_vol, val_from_price, net_val_delta=None):
 # lucide-indian-rupee, the growth tiles = lucide-trending-up, No-of-FCL AND
 # Gross-Margin both = lucide-layers (rendered here as the same 📦 stand-in for
 # consistency), and the 3 bottom-row reference tiles all = lucide-chart-column).
-# Applied by position, not by re-deriving from the sheet, since some of these
-# labels come with no icon at all in the source cell and one (Realization
-# Growth) came with the wrong one (💲) baked in.
+# Applied by position rather than re-derived from the sheet: those label cells
+# are free text, so not every one of them carries an icon and the ones that do
+# are not guaranteed to use the same icon set as the reference view.
 KPI_ICONS = ['₹', '📈', '📦', '🌐', '📈', '📦', '📊', '📊', '📊']
 
 
@@ -422,34 +405,34 @@ def build_exec(ws, export_ws=None, category_margin_total=None):
     """
     A handful of these 9 KPI tiles need more than a straight cell read -- the
     sheet's own pre-formatted text cells (A5/D5/H5/D6) round to whole numbers,
-    truncate the label, or hold what live actually renders as the SUBTITLE
-    rather than the LABEL. Verified cell-by-cell against the live site's own
-    DOM (2026-07-31) after live's displayed KPI tiles were found to have
-    regressed back to these raw-cell values -- a prior session's fix had only
-    ever patched the generated HTML directly, not this function, so it didn't
-    survive the next `py refresh_ceo_dashboard.py` run. Fixed at the source
-    this time:
+    truncate the label, or hold what the reference view renders as the SUBTITLE
+    rather than the LABEL. Verified cell-by-cell against the reference view's
+    own DOM (2026-07-31). An earlier fix for the same tiles had only patched
+    the generated HTML directly rather than this function, so it did not
+    survive the next `py refresh_ceo_dashboard.py` run; it is fixed at the
+    source here instead:
       - Revenue's PY sub (A5) is pre-rounded to a whole number by the sheet
         -- rebuilt from J7 (the prior-year KPI tile's own precise value, to
-        one decimal) instead of trusting the display text.
-      - Revenue Growth's label (D3) carries a trailing "Vs Q1" the live site
-        drops ("Q1 Revenue Growth", not "...Growth Vs Q1"); its sub (D5) is a
-        hand-typed annotation ("↑ Growing") live doesn't use at all -- live
-        shows a fixed period-comparison caption instead.
+        one decimal) rather than from that display text.
+      - Revenue Growth's label (D3) carries a trailing "Vs Q1" that the
+        reference view drops ("Q1 Revenue Growth"); its sub (D5) is a
+        free-text annotation the reference view does not use at all, showing a
+        fixed period-comparison caption instead.
       - No of FCL's value (G4) is a bare count; the reference view appends
         "FCL" and shows one decimal.
-      - Export Value's PY sub (H5) is likewise pre-rounded by the sheet --
-        the one extra decimal of precision only exists on the separate
-        'Containers & Export value' sheet, not here.
-      - Realization Growth's value (J4) needs a forced sign + the "₹.../kg"
-        unit the reference view always shows, not a bare signed number.
-      - "Q1 Growth vs Q4"'s label/sub are actually SWAPPED from what live
-        shows: D6 ("🔢  Q1 FY27\\nGrowth vs Q4") is live's SUBTITLE, not its
-        label -- live's actual label is the fixed "Q1 Growth vs Q4 FY26".
-      - Q4 FY26 / Q1 FY26's values (G7/J7) render as plain grouped integers on
-        live (plain grouped integers -- no ₹ symbol, no decimal), not money-
-        formatted; both need a "Sales (₹L)" subtitle live shows and this
-        sheet has no cell for at all.
+      - Export Value's PY sub (H5) is likewise pre-rounded by the sheet -- the
+        extra decimal of precision lives on the separate container/export-value
+        sheet, not here.
+      - Realization Growth's value (J4) needs a forced sign plus the per-kg
+        currency unit the reference view always shows, not a bare signed
+        number.
+      - For the "Q1 Growth vs Q4" tile, D6 holds what the reference view
+        renders as the SUBTITLE, so the label is set explicitly rather than
+        taken from that cell.
+      - Q4 FY26 / Q1 FY26's values (G7/J7) render as plain grouped integers in
+        the reference view (no currency symbol, no decimal), not money-
+        formatted; both also take a lakhs "Sales" subtitle that this sheet has
+        no cell for at all.
     """
     gross_margin_kpi = {"label": txt(ws, "A6"), "value": num(ws, "A7"), "sub": txt(ws, "A8"), "tone": "red", "fmt": "pct"}
     if category_margin_total is not None:
@@ -577,10 +560,10 @@ def build_vol_dc(ws):
 def build_sales(ws):
     # Workbook widened from a 3-month Q1 cut to a 4-month YTD cut (Apr-Jul) --
     # a 4th current-month/PY-month/growth% column was inserted after each of the
-    # old 3-month groups, shifting everything after. Column O's header text is a
-    # stale "Jun-27 Gr%" copy-paste leftover in the SOURCE sheet itself (verified
-    # against columns E/J: the underlying data is unambiguously July, not June) --
-    # keyed by position here, not by trusting that header string.
+    # old 3-month groups, shifting everything after it along. Columns are keyed
+    # by position rather than by header text, so each block is read correctly
+    # whatever wording a given cut uses in its headers (the underlying data in
+    # columns E/J is what identifies the month here).
     keys = ["name", "apr", "may", "jun", "jul", "ytdCur", "aprPy", "mayPy", "junPy", "julPy", "ytdPy",
             "aprGr", "mayGr", "junGr", "julGr", "q1Gr", "mixPct", "q4Py"]
     cols = "ABCDEFGHIJKLMNOPQR"
@@ -594,20 +577,15 @@ def build_sales(ws):
 
 def rank_by_value(rows):
     """Sort a Top-10/Tail-style block by its own 'cur' value, descending, and
-    recompute 'cumPct' as a fresh running sum in that corrected order.
+    recompute 'cumPct' as a fresh running sum in that order.
 
-    The source sheet's own row order is supposed to already be descending by
-    value (that's the entire premise of a "Top" list, and cumPct is meant to
-    accumulate as you read down the list) but was found to have several rows
-    genuinely out of order in this cut (verified 2026-08 via independent
-    exhaustive re-check: e.g. Chutney sat below the smaller Pickles row,
-    Khansaama Brand below the smaller Soul Brand row, and a 5-row stretch of
-    the Salesman block was jumbled). 'sharePct' is a static ratio (this row's
-    value over the block's total) so it doesn't depend on row order and is
-    left as-is; 'cumPct' does depend on order, so it's recalculated here
-    rather than carried over from the sheet's own (mis-ordered) running sum --
-    otherwise it would stop increasing monotonically top-to-bottom once the
-    rows are put back in the right order."""
+    Rank order and the cumulative share are derived here rather than carried
+    over from the sheet's own row order, so a "Top" list is always strictly
+    descending by value and 'cumPct' always accumulates monotonically as you
+    read down it, whatever order the rows arrive in. 'sharePct' is a static
+    ratio (this row's value over the block's total) so it does not depend on
+    row order and is left as-is; 'cumPct' does depend on order, so it is
+    recalculated here to stay consistent with the order actually rendered."""
     rows = sorted(rows, key=lambda r: r["cur"] or 0, reverse=True)
     running = 0.0
     for r in rows:
@@ -659,11 +637,10 @@ def build_top_sub(ws):
 # 8. Growth Analysis
 # ==============================================================================
 def build_growth(ws):
-    # Gained a new trailing "4M Gr%" column (I) alongside the existing 1M/2M/3M --
-    # NOTE this is a DIFFERENT metric from column E despite sharing the identical
-    # header text "4M Gr%": E is the overall YoY change for the whole 4-month cut,
-    # I is the rolling/trailing 4-month growth rate (same family as 1M/2M/3M).
-    # Disambiguated by column position, not header text.
+    # Gained a new trailing "4M Gr%" column (I) alongside the existing 1M/2M/3M.
+    # Column E is the overall YoY change for the whole 4-month cut; column I is
+    # the rolling/trailing 4-month growth rate (same family as 1M/2M/3M). Both
+    # carry the same header text, so they are disambiguated by column position.
     keys = ["name", "cur", "py", "absDelta", "grYoy", "gr1m", "gr2m", "gr3m", "gr4m"]
     cols = "ABCDEFGHI"
     result = {
@@ -708,20 +685,16 @@ def main():
         if name not in wb.sheetnames:
             print(f"WARNING: sheet '{name}' not found in workbook -- skipping {key}.")
 
-    # build_fs_entity_pnl() (board FS-sourced, Master Consolidation pipeline) is
-    # NOT used here anymore -- as of 2026-08-09 it's still Q1 FY27 (Apr-Jun)
-    # only, since the board FS is prepared quarterly and hasn't caught up to a
-    # July cut. profit["entities"] below comes straight from build_profit()'s
-    # own read of the Profitability_1 sheet, which is now genuinely 4M FY27
-    # (Apr-Jul), correctly labeled, and independently verified 2026-08-09 to
-    # tie out exactly to the audited-basis Consolidated MIS figures used
-    # elsewhere (Revenue from op./EBITDA/PBT/PAT) -- the earlier "mislabeled
-    # Q1, actually 2 months" data-quality problem build_fs_entity_pnl()'s
-    # docstring describes does not appear to affect the current cut.
+    # build_fs_entity_pnl() (board FS-sourced) is not used here: the board FS is
+    # prepared quarterly, so as of 2026-08-09 it still covers Q1 FY27 (Apr-Jun)
+    # only. profit["entities"] below comes straight from build_profit()'s own
+    # read of the Profitability_1 sheet, which covers 4M FY27 (Apr-Jul) and was
+    # independently verified 2026-08-09 to tie out exactly to the audited-basis
+    # consolidated MIS figures used elsewhere (Revenue from op./EBITDA/PBT/PAT).
     profit = build_profit(wb[SHEETS["profit"]])
     profit["entitiesPeriodLabel"] = "4M FY27 (Apr-Jul 2026), from Profitability_1 sheet"
 
-    export_ws = wb["Containers & Export value"] if "Containers & Export value" in wb.sheetnames else None
+    export_ws = wb[SHEET_EXPORT] if SHEET_EXPORT in wb.sheetnames else None
     category_margin_total = next((r for r in profit["categoryMargin"] if str(r.get("name", "")).upper() == "TOTAL"), None)
     data = {
         "sourceFile": os.path.basename(source_path),

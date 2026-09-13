@@ -1,15 +1,15 @@
 """
 update_conso_mis_august.py
 
-Refreshes RawData_MIS in CEO_Sales_Analytics_YTD JULY-26_Conso_Dynamic.xlsx
+Refreshes RawData_MIS in the consolidated dynamic workbook
 with the August 2026 MIS report (5-month YTD FY27 vs YTD FY26), replacing
-the July-basis (4-month) figures built earlier this session.
+the July-basis (4-month) figures built earlier.
 
 Source: the August consolidated MIS workbook, located via the
   CONSO_MIS_WORKBOOK_AUG environment variable.
 
 Verified 2026-09 against this file directly:
-  - 'ADF Consol MIS ' sheet: same row layout as the July file (Sales=4,
+  - the consolidated management sheet: same row layout as the prior file (row offsets
     COGS=7, EBITDA=15, PBT=23, PAT=26), columns S/U now hold "YTD FY27"/
     "YTD FY26" on a 5-month basis (through August) instead of 4.
   - 'Summary-ADFL Conso 2025' sheet: same per-entity 8-column-per-month
@@ -21,7 +21,7 @@ Verified 2026-09 against this file directly:
     ADF Foods Australia entity.
 
 PY entity-wise revenue still isn't in the MIS report itself (same gap as
-before) -- extended from Conso_Data's own FY26 Apr-Aug entity totals,
+before) -- extended from the transaction extract’s own FY26 Apr-Aug entity totals,
 same approach as the original July build, just with Aug added to the
 month list.
 """
@@ -52,7 +52,7 @@ _new_july_mis = Path(os.environ.get("CONSO_MIS_WORKBOOK_JUL", ""))
 if str(_new_july_mis) and _new_july_mis.exists():
     C.MIS_PATH = _new_july_mis
 
-OUT_PATH = BASE / "CEO_Sales_Analytics_YTD JULY-26_Conso_Dynamic.xlsx"
+OUT_PATH = BASE / "the consolidated dynamic workbook"
 
 MONTHS_5 = ["Apr", "May", "Jun", "Jul", "Aug"]
 
@@ -131,7 +131,7 @@ def build_entities_5m(conso_rows):
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     print(f"MIS source: {MIS_AUG_PATH}")
-    print("Loading Conso_Data for PY (FY26 Apr-Aug) entity revenue ...")
+    print("Loading the transaction extract for PY (FY26 Apr-Aug) entity revenue ...")
     conso_rows = C.load_conso_data()
     print(f"  -> {len(conso_rows)} rows")
     fy26_aug_rows = [r for r in conso_rows if r["fy"] == "FY26" and r["month"] == "Aug"]
@@ -164,9 +164,9 @@ def main():
                 "board reporting before treating these PBT/PAT figures as final.")
 
     # Also refresh the Exec Summary tab's title/labels that hardcoded "4M" for the group KPI cards, and the
-    # true elimination-adjusted Group KPI source cells (ADF Consol MIS columns S/U, now a 5-month basis).
+    # true elimination-adjusted Group KPI source cells (consolidated sheet columns S/U, now a 5-month basis).
     wb_mis = openpyxl.load_workbook(MIS_AUG_PATH, data_only=True)
-    ws_consol = wb_mis["ADF Consol MIS "]
+    ws_consol = wb_mis[os.environ.get("MIS_CONSOL_SHEET", "")]
 
     def val(row, col):
         v = ws_consol[f"{col}{row}"].value

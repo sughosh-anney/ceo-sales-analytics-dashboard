@@ -34,7 +34,7 @@ this equals 'Revenue from Operations' exactly (row 17's own SUM(15:16)
 formula in the source, and cross-checked against 'ADFL MIS '!B6 "Revenue
 from op." for August: identical both ways). Using Sales (row 15) alone
 understates revenue by leaving out real operating income (export
-incentives) -- the mistake in v1 of this script, caught by the user.
+incentives) -- the mistake in v1 of this script, since corrected.
 
 Coverage: only Apr-Aug 2026 (the months this MIS cut actually has,
 matching the other 6 entities in Conso) -- Sep-Mar stay 0 until later
@@ -54,7 +54,7 @@ BASE = Path(__file__).resolve().parent
 # Source workbook location comes from the environment -- nothing
 # machine-specific is hard-coded here.
 MIS_CONSO_PATH = Path(os.environ.get("CONSO_MIS_WORKBOOK_AUG", ""))
-OUT_PATH = BASE / "CEO_Sales_Analytics_YTD JULY-26_StandaloneDynamic.xlsx"
+OUT_PATH = BASE / "the standalone dynamic workbook"
 
 MONTH_ORDER = ["Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"]
 # ADFL's own column per month block in 'Summary-ADFL Conso 2025' -- same layout used for the other 6
