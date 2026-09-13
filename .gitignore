@@ -1,0 +1,52 @@
+# ---- Source and generated DATA: never committed ----
+# Source workbooks (sales analytics cuts, MIS reports, board financials)
+*.xlsx
+*.xlsm
+*.xls
+*.xlsb
+
+# Delimited extracts
+*.csv
+*.tsv
+
+# Columnar staging data
+*.parquet
+
+# Data snapshots
+*.json
+financials_data.json
+
+# Generated dashboards -- these carry real figures baked in
+CEO_Dashboard.html
+CEO_Dashboard_Standalone.html
+CEO_Dashboard_Conso.html
+*_Dashboard*.html
+
+# Logs and scratch output
+*.log
+*.out
+scratch_*.txt
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# ---- Environment / secrets ----
+.env
+.env.*
+*.local
+
+# ---- OS / editor ----
+Thumbs.db
+desktop.ini
+.DS_Store
+*.tmp
+~$*
+.vscode/
+.idea/
